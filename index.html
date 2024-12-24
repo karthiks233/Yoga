@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pose Detection with Enhanced Features</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <style>
+body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #f4f4f4;
+        }
+        h1 {
+            color: #333;
+        }
+        #video {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 150vw; /* Make the video fill the entire width of the viewport */
+            height: auto; /* Adjust the height automatically to maintain aspect ratio */
+            object-fit: contain; /* Prevent video from being distorted */
+        }
+        #output_canvas {
+            border: 2px solid #ddd;
+            border-radius: 80px;
+        }
+        #warning {
+            margin-top: 10px;
+            font-size: 18px;
+            font-weight: bold;
+            color: red;
+        }
+        #cross {
+            margin-top: 15px;
+            font-size: 18px;
+            font-weight: bold;
+            color: rgb(60, 0, 255);
+        }
+        #left_warning, #right_warning {
+            margin-top: 5px;
+            font-size: 16px;
+            font-weight: bold;
+            color: red;
+        }    </style>
+</head>
+<body>
+    <h1>Pose Detection with Enhanced Features</h1>
+    <video id="video" autoplay playsinline style="display: none;"></video>
+    <canvas id="output_canvas" width="640" height="480"></canvas>
+    <div id="warning"></div>
+    <div id="left_warning"></div>
+    <div id="right_warning"></div>
+    <div id="left_cross"></div>
+    <div id="right_cross"></div>
+
+    <script>
+        const videoElement = document.getElementById('video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const warningDiv = document.getElementById('warning');
+        const leftWarningDiv = document.getElementById('left_warning');
+        const rightWarningDiv = document.getElementById('right_warning');
+        const leftCrossDiv = document.getElementById('left_cross');
+        const rightCrossDiv = document.getElementById('right_cross');
+
+        const STRAIGHT_TOLERANCE = 0.02;
+        const GROUND_TOLERANCE = 0.05;
+        const BRIGHTNESS_THRESHOLD = 50;
+        const Z_THRESHOLD = 0.4;
+
+        const pose = new Pose({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
+        });
+
+        pose.setOptions({
+            modelComplexity: 0, // Reduced complexity
+            smoothLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5,
+        });
+
+        const vector = (p1, p2) => [p2.x - p1.x, p2.y - p1.y, p2.z - p1.z];
+
+        const crossProductMagnitude = (v1, v2) => Math.sqrt(
+            (v1[1] * v2[2] - v1[2] * v2[1]) ** 2 +
+            (v1[2] * v2[0] - v1[0] * v2[2]) ** 2 +
+            (v1[0] * v2[1] - v1[1] * v2[0]) ** 2
+        );
+
+        const checkBrightness = (imageData) => {
+            let totalBrightness = 0;
+            const data = imageData.data;
+            for (let i = 0; i < data.length; i += 4) {
+                totalBrightness += (data[i] + data[i + 1] + data[i + 2]) / 3;
+            }
+            return totalBrightness / (data.length / 4);
+        };
+
+        let lastProcessedTime = 0;
+        const processingInterval = 100; // 10 FPS
+
+        pose.onResults((results) => {
+            const currentTime = performance.now();
+            if (currentTime - lastProcessedTime < processingInterval) {
+                return;
+            }
+            lastProcessedTime = currentTime;
+
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            const brightness = checkBrightness(canvasCtx.getImageData(0, 0, canvasElement.width, canvasElement.height));
+            if (brightness < BRIGHTNESS_THRESHOLD) {
+                warningDiv.innerText = "Warning: Brightness too low!";
+                canvasCtx.restore();
+                return;
+            } else {
+                warningDiv.innerText = "";
+            }
+
+            if (results.poseLandmarks) {
+                const lm = results.poseLandmarks;
+
+                ['LEFT', 'RIGHT'].forEach((currentSide) => {
+                    const side = currentSide;
+                    const shoulder = lm[side === 'LEFT' ? 11 : 12];
+                    const elbow = lm[side === 'LEFT' ? 13 : 14];
+                    const wrist = lm[side === 'LEFT' ? 15 : 16];
+
+                    if (shoulder && elbow && wrist) {
+                        const SE = vector(shoulder, elbow);
+                        const EW = vector(elbow, wrist);
+                        const crossProduct = crossProductMagnitude(SE, EW);
+
+                        const topLineY = shoulder.y * canvasElement.height - 0.1 * canvasElement.height;
+                        const bottomLineY = shoulder.y * canvasElement.height + 0.1 * canvasElement.height;
+
+                        canvasCtx.beginPath();
+                        canvasCtx.moveTo(0, topLineY);
+                        canvasCtx.lineTo(canvasElement.width, topLineY);
+                        canvasCtx.stroke();
+
+                        canvasCtx.beginPath();
+                        canvasCtx.moveTo(0, bottomLineY);
+                        canvasCtx.lineTo(canvasElement.width, bottomLineY);
+                        canvasCtx.stroke();
+
+                        const isWithinGuidingLines =
+                            elbow.y * canvasElement.height >= topLineY && elbow.y * canvasElement.height <= bottomLineY &&
+                            wrist.y * canvasElement.height >= topLineY && wrist.y * canvasElement.height <= bottomLineY;
+
+                        if (!isWithinGuidingLines) {
+                            if (side === 'LEFT') {
+                                leftWarningDiv.innerText = "Left hand outside guiding lines!";
+                            } else {
+                                rightWarningDiv.innerText = "Right hand outside guiding lines!";
+                            }
+                        } else {
+                            if (side === 'LEFT') {
+                                leftWarningDiv.innerText = '';
+                                leftCrossDiv.innerText = `Left Cross Product: ${crossProduct.toFixed(2)}`; // Updated directly
+                            } else {
+                                rightWarningDiv.innerText = '';
+                                rightCrossDiv.innerText = `Right Cross Product: ${crossProduct.toFixed(2)}`; // Updated directly
+                            }
+
+                            const isStraight = crossProduct < STRAIGHT_TOLERANCE;
+                            const isParallel = Math.abs(SE[1]) < GROUND_TOLERANCE && Math.abs(EW[1]) < GROUND_TOLERANCE;
+                            const tooFar = shoulder.z > Z_THRESHOLD || elbow.z > Z_THRESHOLD || wrist.z > Z_THRESHOLD;
+
+                            let message = `${side} hand: `; // Moved inside the 'else' block
+                            if (tooFar) {
+                                message += "TOO FAR";
+                            } else if (isStraight && isParallel) {
+                                message += "STRAIGHT AND PARALLEL";
+                            } else if (isStraight) {
+                                message += "STRAIGHT BUT NOT PARALLEL";
+                            } else {
+                                message += "NOT STRAIGHT";
+                            }
+
+                            canvasCtx.font = "16px Arial";
+                            canvasCtx.fillStyle = "green";
+                            // canvasCtx.fillText(message, shoulder.x * canvasElement.width - 50, shoulder.y * canvasElement.height - 20);
+                            
+                            drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, { color: '#00FF00', lineWidth: 4 });
+                            drawLandmarks(canvasCtx, results.poseLandmarks, { color: '#FF0000', lineWidth: 2 });
+                        }
+                    }
+                });
+            }
+
+            canvasCtx.restore();
+        });
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await pose.send({ image: videoElement });
+            },
+            width: 640,
+            height: 480,
+        });
+        camera.start();
+    </script>
+</body>
+</html>
